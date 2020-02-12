@@ -8,7 +8,6 @@ import (
 	"bufio"
 	"net/http"
 	"flag"
-	"strings"
 	"sync"
 	"time"
 )
@@ -57,8 +56,7 @@ func main() {
 	}
 	defer fp.Close()
 
-	program_name := strings.Replace(os.Args[0], "./", "", -1)
-	logfilename := fmt.Sprintf("log.%s.%s.txt", program_name, time.Now().Format("20060102150405"))
+	logfilename := fmt.Sprintf("log.get_bs_json.%s.txt", time.Now().Format("20060102150405"))
 	logfile, err := os.Create(logfilename)
     if err != nil {
 		fmt.Fprintln(os.Stderr, err)
@@ -74,7 +72,7 @@ func main() {
 
 	fmt.Fprintf(os.Stderr, "[%s] Accessing EBI BioSamples API with %d threads...\n", time.Now().Format("2006-01-02 15:04:05"), *nroutine)
 
-	isFirst := true
+	// isFirst := true
 	fmt.Fprintln(os.Stdout, "[")
 	for i := 1; ; i++ {
 		id, _, err := reader.ReadLine()
@@ -88,9 +86,9 @@ func main() {
 		wg.Add(1)
 		isFin <- struct{}{}
 		if i == 1 {
-			get_bs_json(base + string(id), isFirst, isFin, wg, logfile)
+			get_bs_json(base + string(id), true, isFin, wg, logfile)
 		} else {
-			go get_bs_json(base + string(id), isFirst, isFin, wg, logfile)
+			go get_bs_json(base + string(id), false, isFin, wg, logfile)
 		}
 		if i % 1000 == 0 {
 			fmt.Fprintf(os.Stderr, "[%s] Sent %d queries.\n", time.Now().Format("2006-01-02 15:04:05"), i)
