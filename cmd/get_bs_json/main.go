@@ -12,7 +12,12 @@ import (
 	"time"
 )
 
-func get_bs_json(url string, isFirst bool, isFin chan interface{}, wg *sync.WaitGroup, logfile *os.File) bool {
+type safeBool struct {
+	b   bool
+	mux sync.Mutex
+}
+
+func get_bs_json(url string, isFirst *safeBool, isFin chan interface{}, wg *sync.WaitGroup, logfile *os.File) {
 	defer wg.Done()
 	resp, err := http.Get(url)
 	if err != nil {
@@ -28,17 +33,19 @@ func get_bs_json(url string, isFirst bool, isFin chan interface{}, wg *sync.Wait
 		message := "Error: " + url + "\n" + output + "\n"
 		logfile.Write(([]byte)(message))
 		<-isFin
-		return false
+		return
 	}
 
-	if !isFirst {
-		//fmt.Fprintln(os.Stdout, ",")
+	isFirst.mux.Lock()
+	if !(isFirst.b) {
 		output = ",\n" + output
+	} else {
+		isFirst.b = false
 	}
 	fmt.Fprint(os.Stdout, output)
+	isFirst.mux.Unlock()
 
 	<-isFin
-	return true
 }
 
 func main() {
@@ -72,7 +79,7 @@ func main() {
 
 	fmt.Fprintf(os.Stderr, "[%s] Accessing EBI BioSamples API with %d threads...\n", time.Now().Format("2006-01-02 15:04:05"), *nroutine)
 
-	// isFirst := true
+	isFirst := &safeBool{b: true}
 	fmt.Fprintln(os.Stdout, "[")
 	for i := 1; ; i++ {
 		id, _, err := reader.ReadLine()
@@ -85,11 +92,7 @@ func main() {
 
 		wg.Add(1)
 		isFin <- struct{}{}
-		if i == 1 {
-			get_bs_json(base + string(id), true, isFin, wg, logfile)
-		} else {
-			go get_bs_json(base + string(id), false, isFin, wg, logfile)
-		}
+		go get_bs_json(base + string(id), isFirst, isFin, wg, logfile)
 		if i % 1000 == 0 {
 			fmt.Fprintf(os.Stderr, "[%s] Sent %d queries.\n", time.Now().Format("2006-01-02 15:04:05"), i)
 		}
