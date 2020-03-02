@@ -35,11 +35,13 @@ func main() {
 	a := flag.String("a", "", "comma-separated string of attributes to be collected")
 	s := flag.Bool("s", false, "If true, a value of attributes not listed in -a option is separated with whitespace and each word is output as a query")
 	l := flag.Bool("l", false, "If true, all attributes are output for entries without any attributes listed in -a")
+	t := flag.Int("t", 9606, "Taxonomy ID of species of interest. Default is 9606; human.")
 	flag.Parse()
 
 	attr := strings.Split(*a, ",")
 	outputAll := *l
 	toBeSeparated := *s
+	taxIdOfInterest := *t
 
 	bytes, err := ioutil.ReadFile(flag.Arg(0))
 	if err != nil {
@@ -57,8 +59,8 @@ func main() {
 	for _, data := range decode_data.([]interface{}) {
 		d := data.(map[string]interface{})
 		id := d["accession"].(string)
-		tax := d["taxId"].(float64)
-		if int(tax) != 9606 {
+		taxId := d["taxId"].(float64)
+		if int(taxId) != taxIdOfInterest {
 			continue
 		}
 		ch := d["characteristics"].(map[string]interface{})
