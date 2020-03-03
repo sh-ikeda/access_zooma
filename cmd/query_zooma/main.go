@@ -15,6 +15,11 @@ import (
 	"time"
 )
 
+type safeMap struct {
+	mapping   map[string](map[string]struct{})
+	mux       sync.Mutex
+}
+
 func is_valid_query(query string, ignoring_queries []string) bool {
 	// `query` must not be a one-character string
 	if len(query)==1 {
@@ -37,7 +42,8 @@ func is_valid_query(query string, ignoring_queries []string) bool {
 	return true
 }
 
-func get_zooma_json(query string, split_line []string, isFin chan interface{}, wg *sync.WaitGroup) {
+func get_zooma_result(query string, split_line []string, isFin chan interface{}, wg *sync.WaitGroup, zooma_map *safeMap) {
+//func get_zooma_result(query string, split_line []string, isFin chan interface{}, zooma_result chan<- Zooma_pair) {
 	const base string = "https://www.ebi.ac.uk/spot/zooma/v2/api/services/annotate?propertyValue="
 
 	defer wg.Done()
@@ -49,6 +55,7 @@ func get_zooma_json(query string, split_line []string, isFin chan interface{}, w
 	bytes, _ := ioutil.ReadAll(resp.Body)
 	defer resp.Body.Close()
 	str := string(bytes)
+
 	if str != "[]" && str[0:1] == "[" {
 		var decode_data interface{}
 		if err := json.Unmarshal(bytes, &decode_data); err != nil {
@@ -74,7 +81,6 @@ func get_zooma_json(query string, split_line []string, isFin chan interface{}, w
 			t := d["semanticTags"].([]interface{})
 			term := t[0].(string)
 
-			// Output to stdout must be done ONLY once per routine in concurrent processes. Multiple outputs within a routine can be interrputed by another routine.
 			var unsplit_value string
 			if len(split_line) == 4 {
 				unsplit_value = split_line[3]
@@ -82,15 +88,23 @@ func get_zooma_json(query string, split_line []string, isFin chan interface{}, w
 				unsplit_value = ""
 			}
 
-			fmt.Fprintf(os.Stdout, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
-				split_line[0], split_line[1],
-				split_line[2], prtype, prvalue, conf, term, unsplit_value)
-				//query, prtype, prvalue, conf, term, unsplit_value)
-			// if len(split_line) == 4 {
-			// 	fmt.Fprintln(os.Stdout, split_line[3])
-			// } else {
-			// 	fmt.Fprintln(os.Stdout, "")
-			// }
+			// fmt.Fprintf(os.Stdout, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
+			// 	split_line[0], split_line[1],
+			// 	split_line[2], prtype, prvalue, conf, term, unsplit_value)
+			// 	//query, prtype, prvalue, conf, term, unsplit_value)
+			// // if len(split_line) == 4 {
+			// // 	fmt.Fprintln(os.Stdout, split_line[3])
+			// // } else {
+			// // 	fmt.Fprintln(os.Stdout, "")
+			// // }
+			result := fmt.Sprintf("%s\t%s\t%s\t%s\t%s",
+				prtype, prvalue, conf, term, unsplit_value)
+			zooma_map.mux.Lock()
+			if _, exist := zooma_map.mapping[query]; !exist {
+				zooma_map.mapping[query] = make(map[string]struct{})
+			}
+			zooma_map.mapping[query][result] = struct{}{}
+			zooma_map.mux.Unlock()
 		}
 	}
 	<-isFin
@@ -122,6 +136,11 @@ func read_ignoring_queries(ignoring_queries_filename string) []string {
 	}
 
 	return ignoring_queries
+}
+
+func replace_special_chars(s string) string {
+	r := regexp.MustCompile(`[%&!?/.,;*()<>{}\[\]\\^|:#"$=~ ]+`)
+	return r.ReplaceAllString(s, "+")
 }
 
 func main() {
@@ -157,10 +176,11 @@ func main() {
 	reader := bufio.NewReaderSize(fp, 8192)
 	wg := new(sync.WaitGroup)
 	isFin := make(chan interface{}, *nroutine)
-	for i := 1; ; i++ {
-		if i%1000 == 0 {
-			fmt.Fprintf(os.Stderr, "[%s] Sent %d queries\n", time.Now().Format("2006-01-02 15:04:05"), i)
-		}
+	defer close(isFin)
+	count := 0
+	is_covered := make(map[string]struct{})
+	zooma_map := &safeMap{mapping: make(map[string](map[string]struct{}))} // map query to ontology terms
+	for {
 		line, _, err := reader.ReadLine()
 		if err == io.EOF {
 			break
@@ -168,21 +188,48 @@ func main() {
 			fmt.Fprintln(os.Stderr, err)
 			os.Exit(1)
 		}
+
 		// split line with \t and obtain query from $3
 		// replace special characters with "+"
 		split_line := strings.Split(string(line), "\t")
-		r := regexp.MustCompile(`[%&!?/.,;*()<>{}\[\]\\^|:#"$=~ ]+`)
-		query := r.ReplaceAllString(split_line[2], "+")
-		//query := strings.Replace(split_line[2], " ", "+", -1)
+		query := replace_special_chars(split_line[2])
 
 		if !is_valid_query(query, ignoring_queries) {
 			continue
 		}
-
+		if _, covered := is_covered[query]; covered {
+			continue
+		} else {
+			is_covered[query] = struct{}{}
+		}
+		count++
 		wg.Add(1)
 		isFin <- struct{}{}
-		go get_zooma_json(query, split_line, isFin, wg)
-		//decode_data := <- isFin
+
+		go get_zooma_result(query, split_line, isFin, wg, zooma_map)
+		if count%1000 == 0 {
+			fmt.Fprintf(os.Stderr, "[%s] Sent %d queries\n", time.Now().Format("2006-01-02 15:04:05"), count)
+		}
 	}
 	wg.Wait()
+
+	fp.Close()
+	fp, err = os.Open(flag.Arg(0))
+	reader = bufio.NewReaderSize(fp, 8192)
+	for {
+		line, _, err := reader.ReadLine()
+		if err == io.EOF {
+			break
+		} else if err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		split_line := strings.Split(string(line), "\t")
+		query := replace_special_chars(split_line[2])
+
+		for result, _ := range (*zooma_map).mapping[query] {
+			fmt.Printf("%s\t%s\t%s\t%s\n",
+				split_line[0], split_line[1], split_line[2], result)
+		}
+	}
 }
